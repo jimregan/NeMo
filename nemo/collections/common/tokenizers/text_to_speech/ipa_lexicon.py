@@ -15,7 +15,7 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "hu-HU"]
 
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
@@ -47,6 +47,12 @@ GRAPHEME_CHARACTER_SETS = {
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
         'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
         'U', 'V', 'W', 'X', 'Y', 'Z', 'Ä', 'Ö', 'Ü', 'ẞ',
+    ),
+    "hu-HU": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'Ä', 'Á', 'É', 'Í',
+        'Ó', 'Ö', 'Ő', 'Ú', 'Ü', 'Ű'
     ),
 }
 
