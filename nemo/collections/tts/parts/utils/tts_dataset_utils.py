@@ -14,41 +14,66 @@
 
 import functools
 import os
+import random
+import traceback
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import librosa
 import numpy as np
 import torch
 from einops import rearrange
 from scipy import ndimage
 from torch.special import gammaln
 
+from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
-def get_audio_paths(audio_path: Path, base_path: Path) -> Tuple[Path, Path]:
-    if os.path.isabs(audio_path):
-        abs_path = audio_path
-        rel_path = audio_path.relative_to(base_path)
+
+def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
+    """
+    Get the absolute and relative paths of input file path.
+
+    Args:
+        input_path: An absolute or relative path.
+        base_path: base directory the input is relative to.
+
+    Returns:
+        The absolute and relative paths of the file.
+    """
+    if os.path.isabs(input_path):
+        abs_path = input_path
+        rel_path = input_path.relative_to(base_path)
     else:
-        rel_path = audio_path
+        rel_path = input_path
         abs_path = base_path / rel_path
 
     return abs_path, rel_path
 
 
-def get_sup_data_file_path(entry: dict, base_audio_path: Path, sup_data_path: Path) -> Path:
-    audio_path = Path(entry["audio_filepath"])
-    rel_audio_path = audio_path.relative_to(base_audio_path).with_suffix("")
-    audio_id = str(rel_audio_path).replace(os.sep, "_")
-    file_name = f"{audio_id}.pt"
-    file_path = Path(os.path.join(sup_data_path, file_name))
-    return file_path
+def get_audio_filepaths(manifest_entry: Dict[str, Any], audio_dir: Path) -> Tuple[Path, Path]:
+    """
+    Get the absolute and relative paths of audio from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+
+    Returns:
+        The absolute and relative paths of the audio.
+    """
+    audio_filepath = Path(manifest_entry["audio_filepath"])
+    audio_filepath_abs, audio_filepath_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=audio_dir)
+    return audio_filepath_abs, audio_filepath_rel
 
 
-def normalize_volume(audio: np.array, volume_level: float) -> np.array:
+def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
     """Apply peak normalization to the input audio.
     """
     if not (0.0 <= volume_level <= 1.0):
         raise ValueError(f"Volume must be in range [0.0, 1.0], received {volume_level}")
+
+    if audio.size == 0:
+        return audio
 
     max_sample = np.max(np.abs(audio))
     if max_sample == 0:
@@ -85,6 +110,31 @@ def general_padding(item, item_len, max_len, pad_value=0):
     if item_len < max_len:
         item = torch.nn.functional.pad(item, (0, max_len - item_len), value=pad_value)
     return item
+
+
+def stack_tensors(tensors: List[torch.Tensor], max_lens: List[int], pad_value: float = 0.0) -> torch.Tensor:
+    """
+    Create batch by stacking input tensor list along the time axes.
+
+    Args:
+        tensors: List of tensors to pad and stack
+        max_lens: List of lengths to pad each axis to, starting with the last axis
+        pad_value: Value for padding
+
+    Returns:
+        Padded and stacked tensor.
+    """
+    padded_tensors = []
+    for tensor in tensors:
+        padding = []
+        for i, max_len in enumerate(max_lens, 1):
+            padding += [0, max_len - tensor.shape[-i]]
+
+        padded_tensor = torch.nn.functional.pad(tensor, pad=padding, value=pad_value)
+        padded_tensors.append(padded_tensor)
+
+    stacked_tensor = torch.stack(padded_tensors)
+    return stacked_tensor
 
 
 def logbeta(x, y):
@@ -133,3 +183,173 @@ def get_base_dir(paths):
         base_dir = common_path(base_dir, audio_dir)
 
     return base_dir
+
+
+def filter_dataset_by_duration(entries: List[Dict[str, Any]], min_duration: float, max_duration: float):
+    """
+    Filter out manifest entries based on duration.
+
+    Args:
+        entries: List of manifest entry dictionaries.
+        min_duration: Minimum duration below which entries are removed.
+        max_duration: Maximum duration above which entries are removed.
+
+    Returns:
+        filtered_entries: List of manifest entries after filtering.
+        total_hours: Total duration of original dataset, in hours
+        filtered_hours: Total duration of dataset after filtering, in hours
+    """
+    filtered_entries = []
+    total_duration = 0.0
+    filtered_duration = 0.0
+    for entry in entries:
+        duration = entry["duration"]
+        total_duration += duration
+        if (min_duration and duration < min_duration) or (max_duration and duration > max_duration):
+            continue
+
+        filtered_duration += duration
+        filtered_entries.append(entry)
+
+    total_hours = total_duration / 3600.0
+    filtered_hours = filtered_duration / 3600.0
+
+    return filtered_entries, total_hours, filtered_hours
+
+
+def get_weighted_sampler(
+    sample_weights: List[float], batch_size: int, num_steps: int
+) -> torch.utils.data.WeightedRandomSampler:
+    """
+    Create pytorch sampler for doing weighted random sampling.
+
+    Args:
+        sample_weights: List of sampling weights for all elements in the dataset.
+        batch_size: Batch size to sample.
+        num_steps: Number of steps to be considered an epoch.
+
+    Returns:
+        Pytorch sampler
+    """
+    weights = torch.tensor(sample_weights, dtype=torch.float64)
+    num_samples = batch_size * num_steps
+    sampler = torch.utils.data.WeightedRandomSampler(weights=weights, num_samples=num_samples)
+    return sampler
+
+
+def _read_audio(
+    audio_filepath: Path, sample_rate: int, offset: float, duration: float, n_retries: int = 5
+) -> AudioSegment:
+    # File seeking sometimes fails when reading flac files with libsndfile < 1.0.30.
+    # Read audio as int32 to minimize issues, and retry read on a different segment in case of failure.
+    # https://github.com/bastibe/python-soundfile/issues/274
+    for _ in range(n_retries):
+        try:
+            return AudioSegment.from_file(
+                audio_filepath, target_sr=sample_rate, offset=offset, duration=duration, int_values=True
+            )
+        except Exception:
+            traceback.print_exc()
+
+    raise ValueError(f"Failed to read audio {audio_filepath}")
+
+
+def _segment_audio(
+    audio_filepath: Path,
+    sample_rate: int,
+    offset: float,
+    n_samples: int,
+    max_offset: Optional[float] = None,
+    n_retries: int = 5,
+) -> AudioSegment:
+    for _ in range(n_retries):
+        try:
+            if max_offset:
+                offset = random.uniform(offset, max_offset)
+            return AudioSegment.segment_from_file(
+                audio_filepath, target_sr=sample_rate, n_segments=n_samples, offset=offset, dtype="int32"
+            )
+        except Exception:
+            traceback.print_exc()
+
+    raise ValueError(f"Failed to segment audio {audio_filepath}")
+
+
+def load_audio(
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    sample_rate: int,
+    max_duration: Optional[float] = None,
+    volume_norm: bool = False,
+) -> Tuple[np.ndarray, Path, Path]:
+    """
+    Load audio file from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+        sample_rate: Sample rate to load audio as.
+        max_duration: Optional float, maximum amount of audio to read, in seconds.
+        volume_norm: Whether to apply volume normalization to the loaded audio.
+
+    Returns:
+        Audio array, and absolute and relative paths to audio file.
+    """
+    audio_filepath_abs, audio_filepath_rel = get_audio_filepaths(manifest_entry=manifest_entry, audio_dir=audio_dir)
+    offset = manifest_entry.get("offset", 0.0)
+    duration = manifest_entry.get("duration", 0.0)
+
+    if max_duration is not None:
+        duration = min(duration, max_duration)
+
+    audio_segment = _read_audio(
+        audio_filepath=audio_filepath_abs, sample_rate=sample_rate, offset=offset, duration=duration
+    )
+    audio = audio_segment.samples
+
+    if volume_norm:
+        audio = normalize_volume(audio)
+
+    return audio, audio_filepath_abs, audio_filepath_rel
+
+
+def sample_audio(
+    manifest_entry: Dict[str, Any], audio_dir: Path, sample_rate: int, n_samples: int, volume_norm: bool = False,
+) -> Tuple[np.ndarray, Path, Path]:
+    """
+    Randomly sample an audio segment from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+        sample_rate: Sample rate to load audio as.
+        n_samples: Size of audio segment to sample.
+        volume_norm: Whether to apply volume normalization to the sampled audio.
+
+    Returns:
+        Audio array, and absolute and relative paths to audio file.
+    """
+    audio_filepath_abs, audio_filepath_rel = get_audio_filepaths(manifest_entry=manifest_entry, audio_dir=audio_dir)
+    offset = manifest_entry.get("offset", None)
+    duration = manifest_entry.get("duration", 0.0)
+
+    if offset is not None:
+        audio_dur = librosa.get_duration(filename=audio_filepath_abs)
+        max_end_sec = min(offset + duration, audio_dur - 0.1)
+        max_offset = max(offset, max_end_sec - (n_samples / sample_rate))
+    else:
+        max_offset = None
+
+    audio_segment = _segment_audio(
+        audio_filepath=audio_filepath_abs,
+        sample_rate=sample_rate,
+        offset=offset,
+        max_offset=max_offset,
+        n_samples=n_samples,
+    )
+    audio = audio_segment.samples
+
+    if volume_norm:
+        audio = normalize_volume(audio)
+
+    return audio, audio_filepath_abs, audio_filepath_rel

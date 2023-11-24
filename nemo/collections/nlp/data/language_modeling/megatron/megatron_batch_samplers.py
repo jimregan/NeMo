@@ -69,15 +69,13 @@ class BaseMegatronBatchSampler:
             micro_batch_size: The size of each micro batch.
             global_batch_size: The size of global batch.
             data_parallel_rank: The value you can obtain via
-                `parallel_state.get_data_parallel_rank()` of apex.transformer.
+                `parallel_state.get_data_parallel_rank()` of megatron.core.
             data_parallel_size: The value you can obtain via
-                `parallel_state.get_data_parallel_world_size()` of apex.transformer.
+                `parallel_state.get_data_parallel_world_size()` of megatron.core.
         """
         # Sanity checks.
         if total_samples <= 0:
             raise RuntimeError("no sample to consume: {}".format(total_samples))
-        if consumed_samples >= total_samples:
-            raise RuntimeError("no samples left to consume: {}, {}".format(consumed_samples, total_samples))
         if micro_batch_size <= 0:
             raise RuntimeError(f"micro_batch_size size must be greater than 0, but {micro_batch_size}")
         if data_parallel_size <= 0:
@@ -197,6 +195,13 @@ class MegatronPretrainingRandomBatchSampler(BaseMegatronBatchSampler):
             drop_last=drop_last,
         )
         self.last_batch_size = self.total_samples % self._global_batch_size
+
+    def __len__(self):
+        num_available_samples = self.total_samples
+        if self.drop_last:
+            return num_available_samples // self.global_batch_size
+        else:
+            return (num_available_samples + self.global_batch_size - 1) // self.global_batch_size
 
     def __iter__(self):
         active_total_samples = self.total_samples - self.last_batch_size

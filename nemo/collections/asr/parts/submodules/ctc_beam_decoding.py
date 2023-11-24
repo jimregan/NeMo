@@ -14,7 +14,7 @@
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -515,6 +515,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
                 vocabulary=self.vocab,
                 tokenizer=self.tokenizer,
                 lexicon_path=self.flashlight_cfg.lexicon_path,
+                boost_path=self.flashlight_cfg.boost_path,
                 beam_size=self.beam_size,
                 beam_size_token=self.flashlight_cfg.beam_size_token,
                 beam_threshold=self.flashlight_cfg.beam_threshold,
@@ -582,6 +583,7 @@ class PyCTCDecodeConfig:
 @dataclass
 class FlashlightConfig:
     lexicon_path: Optional[str] = None
+    boost_path: Optional[str] = None
     beam_size_token: int = 16
     beam_threshold: float = 20.0
     unk_weight: float = -math.inf
@@ -600,5 +602,5 @@ class BeamCTCInferConfig:
     beam_beta: float = 0.0
     kenlm_path: Optional[str] = None
 
-    flashlight_cfg: Optional[FlashlightConfig] = FlashlightConfig()
-    pyctcdecode_cfg: Optional[PyCTCDecodeConfig] = PyCTCDecodeConfig()
+    flashlight_cfg: Optional[FlashlightConfig] = field(default_factory=lambda: FlashlightConfig())
+    pyctcdecode_cfg: Optional[PyCTCDecodeConfig] = field(default_factory=lambda: PyCTCDecodeConfig())

@@ -50,6 +50,7 @@ from nemo.collections.tts.torch.tts_data_types import (
     LogMel,
     P_voiced,
     Pitch,
+    ReferenceAudio,
     SpeakerID,
     TTSDataType,
     Voiced_mask,
@@ -176,6 +177,7 @@ class TTSDataset(Dataset):
             pitch_norm (Optional[bool]): Whether to normalize pitch or not. If True, requires providing either
                 pitch_stats_path or (pitch_mean and pitch_std).
             pitch_stats_path (Optional[Path, str]): Path to file containing speaker level pitch statistics.
+            reference_audio_type (Optional[str]): Criterion for the selection of reference audios for the GlobalStyleToken submodule. Currently, supported values are "ground-truth" (reference audio = ground truth audio, like in the original GST paper) and "same-speaker" (reference audio = random audio from the same speaker). Defaults to "same-speaker".
         """
         super().__init__()
 
@@ -483,6 +485,24 @@ class TTSDataset(Dataset):
     def add_speaker_id(self, **kwargs):
         pass
 
+    def add_reference_audio(self, **kwargs):
+        reference_audio_type = kwargs.pop("reference_audio_type", "same-speaker")
+        if reference_audio_type == "same-speaker":
+            assert SpeakerID in self.sup_data_types, "Please add speaker_id in sup_data_types."
+            # Add a mapping for each speaker to their manifest indexes
+            speaker_to_index_map = defaultdict(set)
+            for i, d in enumerate(self.data):
+                speaker_to_index_map[d["speaker_id"]].add(i)
+            # Random sample a reference audio from the same speaker
+            self.get_reference_for_sample = lambda sample: self.data[
+                random.sample(speaker_to_index_map[sample["speaker_id"]], 1)[0]
+            ]
+        elif reference_audio_type == "ground-truth":
+            # Use ground truth audio as reference audio
+            self.get_reference_for_sample = lambda sample: sample
+        else:
+            raise NotImplementedError(f"Reference audio type \"{reference_audio_type}\" is not supported.")
+
     def get_spec(self, audio):
         with torch.cuda.amp.autocast(enabled=False):
             spec = self.stft(audio)
@@ -683,6 +703,19 @@ class TTSDataset(Dataset):
         if SpeakerID in self.sup_data_types_set:
             speaker_id = torch.tensor(sample["speaker_id"]).long()
 
+        reference_audio, reference_audio_length = None, None
+        if ReferenceAudio in self.sup_data_types_set:
+            reference = self.get_reference_for_sample(sample)
+            reference_audio = self.featurizer.process(
+                reference["audio_filepath"],
+                trim=self.trim,
+                trim_ref=self.trim_ref,
+                trim_top_db=self.trim_top_db,
+                trim_frame_length=self.trim_frame_length,
+                trim_hop_length=self.trim_hop_length,
+            )
+            reference_audio_length = torch.tensor(reference_audio.shape[0]).long()
+
         return (
             audio,
             audio_length,
@@ -700,6 +733,8 @@ class TTSDataset(Dataset):
             voiced_mask,
             p_voiced,
             audio_shifted,
+            reference_audio,
+            reference_audio_length,
         )
 
     def __len__(self):
@@ -733,6 +768,8 @@ class TTSDataset(Dataset):
             voiced_masks,
             p_voiceds,
             _,
+            _,
+            reference_audio_lengths,
         ) = zip(*batch)
 
         max_audio_len = max(audio_lengths).item()
@@ -741,6 +778,9 @@ class TTSDataset(Dataset):
         max_durations_len = max([len(i) for i in durations_list]) if Durations in self.sup_data_types_set else None
         max_pitches_len = max(pitches_lengths).item() if Pitch in self.sup_data_types_set else None
         max_energies_len = max(energies_lengths).item() if Energy in self.sup_data_types_set else None
+        max_reference_audio_len = (
+            max(reference_audio_lengths).item() if ReferenceAudio in self.sup_data_types_set else None
+        )
 
         if LogMel in self.sup_data_types_set:
             log_mel_pad = torch.finfo(batch[0][4].dtype).tiny
@@ -765,7 +805,9 @@ class TTSDataset(Dataset):
             voiced_masks,
             p_voiceds,
             audios_shifted,
+            reference_audios,
         ) = (
+            [],
             [],
             [],
             [],
@@ -796,6 +838,8 @@ class TTSDataset(Dataset):
                 voiced_mask,
                 p_voiced,
                 audio_shifted,
+                reference_audio,
+                reference_audios_length,
             ) = sample_tuple
 
             audio = general_padding(audio, audio_len.item(), max_audio_len)
@@ -834,6 +878,11 @@ class TTSDataset(Dataset):
             if SpeakerID in self.sup_data_types_set:
                 speaker_ids.append(speaker_id)
 
+            if ReferenceAudio in self.sup_data_types_set:
+                reference_audios.append(
+                    general_padding(reference_audio, reference_audios_length.item(), max_reference_audio_len)
+                )
+
         data_dict = {
             "audio": torch.stack(audios),
             "audio_lens": torch.stack(audio_lengths),
@@ -851,6 +900,10 @@ class TTSDataset(Dataset):
             "voiced_mask": torch.stack(voiced_masks) if Voiced_mask in self.sup_data_types_set else None,
             "p_voiced": torch.stack(p_voiceds) if P_voiced in self.sup_data_types_set else None,
             "audio_shifted": torch.stack(audios_shifted) if audio_shifted is not None else None,
+            "reference_audio": torch.stack(reference_audios) if ReferenceAudio in self.sup_data_types_set else None,
+            "reference_audio_lens": torch.stack(reference_audio_lengths)
+            if ReferenceAudio in self.sup_data_types_set
+            else None,
         }
 
         return data_dict

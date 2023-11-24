@@ -32,7 +32,7 @@ Optionally, launch TensorBoard to view the training results in ``./nemo_experime
 ..
 
 If ``create_checkpoint_callback`` is set to ``True``, then NeMo automatically creates checkpoints during training
-using PyTorch Lightning's `ModelCheckpoint <https://pytorch-lightning.readthedocs.io/en/stable/extensions/generated/pytorch_lightning.callbacks.ModelCheckpoint.html#pytorch_lightning.callbacks.ModelCheckpoint>`_.
+using PyTorch Lightning's `ModelCheckpoint <https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.ModelCheckpoint.html>`_.
 We can configure the ``ModelCheckpoint`` via YAML or CLI.
 
 .. code-block:: yaml
@@ -173,8 +173,19 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
             every_n_steps: 1  # How often to update EMA weights
             validate_original_weights: False  # Whether to use original weights for validation calculation or EMA weights
 
+Support for Preemption
+----------------------
+
+.. _exp_manager_preemption_support-label:
+
+NeMo adds support for a callback upon preemption while running the models on clusters. The callback takes care of saving the current state of training via the ``.ckpt``
+file followed by a graceful exit from the run. The checkpoint saved upon preemption has the ``*last.ckpt`` suffix and replaces the previously saved last checkpoints.
+This feature is useful to increase utilization on clusters.
+The ``PreemptionCallback`` is enabled by default. To disable it simply add ``create_preemption_callback: False`` under exp_manager in the config YAML file. 
+
 
 .. _nemo_multirun-label:
+
 
 Hydra Multi-Run with NeMo
 -------------------------
@@ -254,7 +265,7 @@ name as shown below -
         project: "<Add some project name here>"
 
       # HP Search may crash due to various reasons, best to attempt continuation in order to
-      # resume from where the last failure case occured.
+      # resume from where the last failure case occurred.
       resume_if_exists: true
       resume_ignore_no_checkpoint: true
 
@@ -310,7 +321,7 @@ tracking tool and can simply rerun the best config after the search is finished.
 
 When running hydra scripts, you may sometimes face config issues which crash the program. In NeMo Multi-Run, a crash in
 any one run will **not** crash the entire program, we will simply take note of it and move onto the next job. Once all
-jobs are completed, we then raise the error in the order that it occured (it will crash the program with the first error's
+jobs are completed, we then raise the error in the order that it occurred (it will crash the program with the first error's
 stack trace).
 
 In order to debug Muti-Run, we suggest to comment out the full hyper parameter config set inside ``sweep.params``

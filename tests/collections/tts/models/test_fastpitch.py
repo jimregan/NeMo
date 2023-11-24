@@ -16,7 +16,10 @@
 This file implemented unit tests for loading all pretrained FastPitch NGC checkpoints and generating Mel-spectrograms.
 The test duration breakdowns are shown below. In general, each test for a single model is ~25 seconds on an NVIDIA RTX A6000.
 """
+import random
+
 import pytest
+import torch
 
 from nemo.collections.tts.models import FastPitchModel
 
@@ -32,10 +35,33 @@ def pretrained_model(request, get_language_id_from_pretrained_model_name):
     return model, language_id
 
 
+# This test can only pass when nemo_text_process<=0.1.8rc0. If >0.1.8rc0, the normalized outputs are unexpected for Chinese.
+# Will remove the marker `pleasefixme` once next-text-processing new release fixes the bug.
+# Tracking bugfix in https://github.com/NVIDIA/NeMo-text-processing/issues/109.
+@pytest.mark.pleasefixme
 @pytest.mark.nightly
 @pytest.mark.run_only_on('GPU')
 def test_inference(pretrained_model, language_specific_text_example):
     model, language_id = pretrained_model
     text = language_specific_text_example[language_id]
     parsed_text = model.parse(text)
-    _ = model.generate_spectrogram(tokens=parsed_text)
+
+    # Multi-Speaker
+    speaker_id = None
+    reference_spec = None
+    reference_spec_lens = None
+
+    if hasattr(model.fastpitch, 'speaker_emb'):
+        speaker_id = 0
+
+    if hasattr(model.fastpitch, 'speaker_encoder'):
+        if hasattr(model.fastpitch.speaker_encoder, 'lookup_module'):
+            speaker_id = 0
+        if hasattr(model.fastpitch.speaker_encoder, 'gst_module'):
+            bs, lens, t_spec = parsed_text.shape[0], random.randint(50, 100), model.cfg.n_mel_channels
+            reference_spec = torch.rand(bs, lens, t_spec)
+            reference_spec_lens = torch.tensor([lens]).long().expand(bs)
+
+    _ = model.generate_spectrogram(
+        tokens=parsed_text, speaker=speaker_id, reference_spec=reference_spec, reference_spec_lens=reference_spec_lens
+    )

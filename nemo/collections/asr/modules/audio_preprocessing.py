@@ -608,7 +608,7 @@ class MaskedPatchAugmentation(NeuralModule):
 
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
-            patches = range(cur_len // self.patch_size - 1)
+            patches = range(cur_len // self.patch_size)
             masked_patches = random.sample(patches, mask_patches)
 
             for mp in masked_patches:
@@ -633,6 +633,12 @@ class CropOrPadSpectrogramAugmentation(NeuralModule):
     def __init__(self, audio_length):
         super(CropOrPadSpectrogramAugmentation, self).__init__()
         self.audio_length = audio_length
+
+        if self.audio_length < 0:
+            raise ValueError(
+                'audio_length must be non-negative. If using a dataclass with OmegaConf, '
+                'please call OmegaConf.to_object(cfg) to call appropriate __post_init__ methods.'
+            )
 
     @typecheck()
     @torch.no_grad()
@@ -710,7 +716,7 @@ class AudioToSpectrogram(NeuralModule):
             logging.error('Could not import torchaudio. Some features might not work.')
 
             raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
+                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
             )
 
         super().__init__()
@@ -813,7 +819,7 @@ class SpectrogramToAudio(NeuralModule):
             logging.error('Could not import torchaudio. Some features might not work.')
 
             raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
+                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
             )
 
         super().__init__()

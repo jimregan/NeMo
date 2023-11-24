@@ -28,9 +28,9 @@ from pyannote.core import Annotation, Segment
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import repeat_signal
+from nemo.collections.asr.parts.utils.longform_clustering import LongFormSpeakerClustering
 from nemo.collections.asr.parts.utils.offline_clustering import SpeakerClustering, get_argmin_mat, split_input_data
 from nemo.utils import logging
-
 
 """
 This file contains all the utility functions required for speaker embeddings part in diarization scripts
@@ -464,9 +464,8 @@ def perform_clustering(
         logging.warning("cuda=False, using CPU for eigen decomposition. This might slow down the clustering process.")
         cuda = False
 
-    speaker_clustering = SpeakerClustering(cuda=cuda)
+    speaker_clustering = LongFormSpeakerClustering(cuda=cuda)
 
-    # If True, export torch script module and save it to the base folder.
     if clustering_params.get('export_script_module', False):
         speaker_clustering = torch.jit.script(speaker_clustering)
         torch.jit.save(speaker_clustering, 'speaker_clustering_script.pt')
@@ -492,6 +491,8 @@ def perform_clustering(
             max_num_speakers=int(clustering_params.max_num_speakers),
             max_rp_threshold=float(clustering_params.max_rp_threshold),
             sparse_search_volume=int(clustering_params.sparse_search_volume),
+            chunk_cluster_count=clustering_params.get('chunk_cluster_count', None),
+            embeddings_per_chunk=clustering_params.get('embeddings_per_chunk', None),
         )
 
         del uniq_embs_and_timestamps
@@ -499,8 +500,8 @@ def perform_clustering(
             torch.cuda.empty_cache()
         else:
             gc.collect()
-
         timestamps = speaker_clustering.timestamps_in_scales[base_scale_idx]
+
         cluster_labels = cluster_labels.cpu().numpy()
         if len(cluster_labels) != timestamps.shape[0]:
             raise ValueError("Mismatch of length between cluster_labels and timestamps.")
@@ -645,7 +646,6 @@ def validate_vad_manifest(AUDIO_RTTM_MAP, vad_manifest):
         raise ValueError("All files present in manifest contains silence, aborting next steps")
 
 
-@torch.jit.script
 def is_overlap(rangeA: List[float], rangeB: List[float]) -> bool:
     """
     Check whether two ranges have overlap.
@@ -664,7 +664,6 @@ def is_overlap(rangeA: List[float], rangeB: List[float]) -> bool:
     return end1 > start2 and end2 > start1
 
 
-@torch.jit.script
 def get_overlap_range(rangeA: List[float], rangeB: List[float]):
     """
     Calculate the overlapping range between rangeA and rangeB.
@@ -683,15 +682,12 @@ def get_overlap_range(rangeA: List[float], rangeB: List[float]):
     return [max(rangeA[0], rangeB[0]), min(rangeA[1], rangeB[1])]
 
 
-@torch.jit.script
 def merge_int_intervals(intervals_in: List[List[int]]) -> List[List[int]]:
     """
     Interval merging algorithm which has `O(N*logN)` time complexity. (N is number of intervals)
     Merge the range pairs if there is overlap exists between the given ranges.
     This algorithm needs a sorted range list in terms of the start time.
     Note that neighboring numbers lead to a merged range.
-
-    Note: This function is designed to be compiled/imported with `@torch.jit.script` decorator.
 
     Example:
         input: [(1, 10), (11, 20)]
@@ -745,7 +741,6 @@ def merge_int_intervals(intervals_in: List[List[int]]) -> List[List[int]]:
         return merged_list
 
 
-@torch.jit.script
 def fl2int(x: float, decimals: int = 3) -> int:
     """
     Convert floating point number to integer.
@@ -753,7 +748,6 @@ def fl2int(x: float, decimals: int = 3) -> int:
     return torch.round(torch.tensor([x * (10 ** decimals)]), decimals=0).int().item()
 
 
-@torch.jit.script
 def int2fl(x: int, decimals: int = 3) -> float:
     """
     Convert integer to floating point number.
@@ -761,7 +755,6 @@ def int2fl(x: int, decimals: int = 3) -> float:
     return torch.round(torch.tensor([x / (10 ** decimals)]), decimals=decimals).item()
 
 
-@torch.jit.script
 def merge_float_intervals(ranges: List[List[float]], decimals: int = 5, margin: int = 2) -> List[List[float]]:
     """
     Combine overlaps with floating point numbers. Since neighboring integers are considered as continuous range,
@@ -805,7 +798,6 @@ def merge_float_intervals(ranges: List[List[float]], decimals: int = 5, margin: 
     return merged_ranges_float
 
 
-@torch.jit.script
 def get_sub_range_list(target_range: List[float], source_range_list: List[List[float]]) -> List[List[float]]:
     """
     Get the ranges that has overlaps with the target range from the source_range_list.
@@ -961,7 +953,6 @@ def get_subsegments(offset: float, window: float, shift: float, duration: float)
     return subsegments
 
 
-@torch.jit.script
 def get_target_sig(sig, start_sec: float, end_sec: float, slice_length: int, sample_rate: int,) -> torch.Tensor:
     """
     Extract time-series signal from the given audio buffer based on the start and end
@@ -985,7 +976,6 @@ def get_target_sig(sig, start_sec: float, end_sec: float, slice_length: int, sam
     return sig[start_idx:end_idx]
 
 
-@torch.jit.script
 def check_ranges(range_tensor):
     """
     Check whether the range list has any faulty timestamp order.
@@ -1003,7 +993,6 @@ def check_ranges(range_tensor):
     return True
 
 
-@torch.jit.script
 def tensor_to_list(range_tensor: torch.Tensor) -> List[List[float]]:
     """
     For online segmentation. Force the list elements to be float type.
@@ -1011,7 +1000,6 @@ def tensor_to_list(range_tensor: torch.Tensor) -> List[List[float]]:
     return [[float(range_tensor[k][0]), float(range_tensor[k][1])] for k in range(range_tensor.shape[0])]
 
 
-@torch.jit.script
 def get_speech_labels_for_update(
     frame_start: float,
     buffer_end: float,
@@ -1079,12 +1067,12 @@ def get_speech_labels_for_update(
     return speech_label_for_new_segments, cumulative_speech_labels
 
 
-@torch.jit.script
 def get_new_cursor_for_update(frame_start: float, segment_range_ts: List[List[float]],) -> Tuple[float, int]:
     """
-    For online speaker diarization.
+    Function for updating a cursor online speaker diarization. 
     Remove the old segments that overlap with the new frame (self.frame_start)
     cursor_for_old_segments is set to the onset of the t_range popped lastly.
+
 
     Args:
         frame_start (float):
@@ -1113,7 +1101,6 @@ def get_new_cursor_for_update(frame_start: float, segment_range_ts: List[List[fl
     return cursor_for_old_segments, cursor_index
 
 
-@torch.jit.script
 def get_online_segments_from_slices(
     sig: torch.Tensor,
     buffer_start: float,
@@ -1186,7 +1173,6 @@ def get_online_segments_from_slices(
     return ind_offset, sigs_list, sig_rangel_list, sig_indexes
 
 
-@torch.jit.script
 def get_online_subsegments_from_buffer(
     buffer_start: float,
     buffer_end: float,
@@ -1612,7 +1598,6 @@ def embedding_normalize(embs, use_std=False, eps=1e-10):
     return embs
 
 
-@torch.jit.script
 class OnlineSegmentor:
     """
     Online Segmentor for online (streaming) diarizer.

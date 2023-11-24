@@ -12,6 +12,8 @@ This section provides a brief overview of TTS models that NeMo's TTS collection 
 Mel-Spectrogram Generators
 --------------------------
 
+.. _FastPitch_model:
+
 FastPitch
 ~~~~~~~~~
 FastPitch is a fully-parallel text-to-speech synthesis model based on FastSpeech, conditioned on fundamental frequency contours. The model predicts pitch contours during inference. By altering these predictions, the generated speech can be more expressive, better match the semantic of the utterance, and in the end more engaging to the listener. Uniformly increasing or decreasing pitch with FastPitch generates speech that resembles the voluntary modulation of voice. Conditioning on frequency contours improves the overall quality of synthesized speech, making it comparable to the state of the art. It does not introduce an overhead, and FastPitch retains the favorable, fully-parallel Transformers architecture, with over 900x real-time factor for mel-spectrogram synthesis of a typical utterance. The architecture of FastPitch is shown below. It is based on FastSpeech and consists of two feed-forward Transformer (FFTr) stacks. The first FFTr operates in the resolution of input tokens, and the other one in the resolution of the output frames. Please refer to :cite:`tts-models-lancucki2021fastpitch` for details.
@@ -110,16 +112,27 @@ Speech-to-text alignment is a critical component of neural TTS models. Autoregre
 
 
 End2End Models
---------
+--------------
 
 VITS
 ~~~~~~~~~~~~~~~
-VITS is an end-to-end speech synthesis model, which generates raw waveform audios from grapheme/phoneme input. It uses Variational Autoencoder to combine GlowTTS-like spectrogram generator with HiFi-GAN vocoder model. Also, it has separate flow-based duration predictor, which samples alignments from noise with conditioning on text.  Please refer to :cite:`tts-models-kim2021conditional` for details. The model is experemental yet, so we do not guarantee clean running.
+VITS is an end-to-end speech synthesis model, which generates raw waveform audios from grapheme/phoneme input. It uses Variational Autoencoder to combine GlowTTS-like spectrogram generator with HiFi-GAN vocoder model. Also, it has separate flow-based duration predictor, which samples alignments from noise with conditioning on text.  Please refer to :cite:`tts-models-kim2021conditional` for details. The model is experimental yet, so we do not guarantee clean running.
 
     .. image:: images/vits_model.png
         :align: center
         :alt: vits model
         :scale: 25%
+
+
+Enhancers
+---------
+
+.. _SpectrogramEnhancer_model:
+
+Spectrogram Enhancer
+~~~~~~~~~~~~~~~~~~~~
+GAN-based model to add details to blurry spectrograms from TTS models like Tacotron or FastPitch.
+
 
 References
 ----------
